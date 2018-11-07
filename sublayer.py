@@ -4,12 +4,6 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 
-from sublayers import MultiHeadAttention, MLP, DocRepAttention
-
-from lib.data_utils import list_shuffle, load
-from lib.torch_utils import Dot, Gaussian_ker, GenDotM, cossim, cossim1, MaxM_fromBatch
-from lib.torch_utils import MaxM_1dConv
-from math import floor
 
 
 class MLP(nn.Module):
@@ -30,24 +24,30 @@ class MultiHeadAttention(nn.Module):
     Multi-head attention as per https://arxiv.org/pdf/1706.03762.pdf
     Refer Figure 2
     """
-    def __init__(self, word_dim, query_length, doc_length, num_heads, #output_dim
-        bias_mask=None, dropout=0.0):
+    def __init__(self, word_dim, query_length, doc_length, num_heads, emb_mod, dropout=0.0):
         """
-        Parameters:
-        word_dim: The dimension of word embedding
-        query_length: The number of words in the query
-        doc_length: The number of words in the document
-        num_heads: Number of attention heads
-        bias_mask: Masking tensor to prevent connections to future elements
-          dropout: Dropout probability (Should be non-zero only during training)
+            Parameters:
+            word_dim: The dimension of word embedding
+            query_length: The number of words in the query
+            doc_length: The number of words in the document
+            num_heads: Number of attention heads
+            dropout: Dropout probability (Should be non-zero only during training)
         """
         super(MultiHeadAttention, self).__init__()
-        # Checks borrowed from 
+        
+        # check the number of heads
+        if word_dim % num_heads != 0:
+            raise ValueError("embedding dim (%d) must be divisible by the number of "
+               "attention heads (%d)." % (word_dim, num_heads))
           
         self.num_heads = num_heads  # Number of attention heads
         self.query_scale = (word_dim//num_heads)**-0.5
-        self.bias_mask = bias_mask
 
+        # load the embedding
+
+        self.emb_mod = emb_mod
+
+        #self.bias_mask = bias_mask
 
         self.linear_trans = nn.Linear(word_dim, word_dim, bias=False)
 
@@ -81,100 +81,122 @@ class MultiHeadAttention(nn.Module):
         shape = x.shape
         return x.permute(0, 2, 1, 3).contiguous().view(shape[0], shape[2], shape[3]*self.num_heads)
 
-    def forward(self, queries, doc):  
+    def forward(self, q, d_pos, d_neg, q_mask, d_pos_mask, d_neg_mask):  
         # queries Shape [BS, Q_len, word_dim]
-        # doc Shape [BS, D_len, word_dim]  
+        # doc Shape [BS, D_len, word_dim]
+
+        # mask out padding's variable embeddings
+        q = self.emb_mod(q) * q_mask  # (BS, qlen, emb_size)
+        d_pos = self.emb_mod(d_pos)  * d_pos_mask  # (BS, dlen, emb_size)
+        d_neg = self.emb_mod(d_neg)  * d_neg_mask  # (BS, dlen, emb_size)
+
         # Do a linear for each component
-        queries = self.linear_trans(queries) 
-        doc = self.linear_trans(doc)
+        queries = self.linear_trans(q) 
+        d_pos = self.linear_trans(d_pos)
+        d_neg = self.linear_trans(d_neg)
 
         # Split into multiple heads
         queries = self._split_heads(queries) # SHAPE=[batch_size, num_heads, query_length, dim/num_heads]
-        doc = self._split_heads(doc)  # SHAPE=[batch_size, num_heads, doc_length, dim/num_heads]
-
+        d_pos = self._split_heads(d_pos)  # SHAPE=[batch_size, num_heads, doc_length, dim/num_heads]
+        d_neg = self._split_heads(d_neg)
+        
         # Scale queries
         queries *= self.query_scale
 
+        # calculate two docs
+        d_list = [d_pos, d_neg]
+        d_output = []
         # Combine queries and keys
-        logits = torch.matmul(queries, doc.permute(0, 1, 3, 2))  #SHAPE=[bs, num_heads, query_length, doc_length]
 
-        # Add bias to mask future values
-        if self.bias_mask is not None:
-            logits += Variable(self.bias_mask[:, :, :logits.shape[-2], :logits.shape[-1]].type_as(logits.data))
+        for doc in d_list:
+            # calculate the probability
+            logits = torch.matmul(queries, doc.permute(0, 1, 3, 2))  
+            #SHAPE=[bs, num_heads, query_length, doc_length]
 
-        # Convert to probabilites
-        weights = nn.functional.softmax(logits, dim=2)  # PROBLEM ! dim 
+            # Convert to probabilites
+            weights = nn.functional.softmax(logits, dim=-1)  # PROBLEM ! dim 
 
-        # Dropout
-        weights = self.dropout(weights)
+            # Dropout
+            weights = self.dropout(weights)
 
-        # Combine with values to get context
-        contexts = torch.matmul(weights, doc)  #SHAPE=[bs, num_heads, query_length, dim/num_heads]
+            # Combine with values to get context
+            contexts = torch.matmul(weights, doc)  #SHAPE=[bs, num_heads, query_length, dim/num_heads]
 
-        # Merge heads
-        contexts = self._merge_heads(contexts)   # SHAPE= [batch_size, query_length, dim]
-        #contexts = torch.tanh(contexts)
+            # Merge heads
+            contexts = self._merge_heads(contexts)   # SHAPE= [batch_size, query_length, dim]
 
-        # Linear to get output
-        outputs = self.output_linear(contexts) # SHAPE = [BS, query_length, word_dim]
+            # Linear to get output
+            outputs = self.output_linear(contexts) # SHAPE = [BS, query_length, word_dim]
+            d_output.append(outputs)
 
-        return outputs
+        return d_output[0], d_output[1]
 
 class DocRepAttention(nn.Module):
     
-    def __init__(self, batch_size, hidden_size, query_length, word_dim):        
-        super(AttentionWordRNN, self).__init__()
+    def __init__(self, batch_size, hidden_size, query_length, word_dim):
+        """
+        Parameters:
+        batch_size: batch size
+        hidden_size: the size of the hidden layer
+        query_length: the length of the query
+        word_dim: dim of the embedding
+        """
+        super(DocRepAttention, self).__init__()
         self.hidden_size = hidden_size
         self.batch_size = batch_size
         self.word_dim = word_dim
         self.query_length = query_length
-        self.u_w = nn.Parameter(torch.Tensor((batch_size, query_length, word_dim)))
-        self.mlp = MLP(word_dim, hidden_size, word_dim)
-        self.uw.data.uniform_(-0.1, 0.1)
 
-    def forward(self, attention_mat):
+        self.u_w = nn.Parameter(torch.Tensor((batch_size, 1, word_dim)))
+        self.u_w.data.uniform_(-0.1, 0.1)
+        self.mlp = MLP(word_dim, hidden_size, word_dim)
+        
+
+    def forward(self, doc_rep):
         """
-        attention_mat: The output of the multi-head attention layer (BS, Q_len, dim)
+        doc_rep: The output of the multi-head attention layer
+        shape = (BS, Q_len, dim)
         """
-        u_t = self.mlp(attention_mat) # shape=[bs, q_len, word_dim]
-        logits = torch.matmul(u_t, u_w.permute(0, 2, 1))  #SHAPE=[bs, query_length, query_length]
-        weights = nn.functional.softmax(logits, dim=1)  # PROBLEM ! dim SHAPE = [BS, q_l, q_l] 
-        gloDoc = torch.matmul(weights, attention_mat)
+        # first transform layer
+        u_t = self.mlp(doc_rep) # shape=[bs, q_len, dim]
+
+        # calculate the logits and weights
+        logits = torch.matmul(u_t, self.u_w.permute(0, 2, 1))  #SHAPE=[bs, query_length, query_length]
+        weights = nn.functional.softmax(logits, dim=-1)  # PROBLEM ! dim SHAPE = [BS, q_l, q_l] 
+
+        # get the summation
+        gloDoc = torch.matmul(weights.permute(0, 2, 1), doc_rep)
+        # shape = [bs, 1, dim]
+
         return gloDoc
 
 
 class QueryRep(nn.Module):
-    """MultiMatch Model"""
-    def __init__(self, BS, q_len, kernel_size, filter_size,
-                 hidden_size, output_dim, vocab_size, emb_size,
-                 sim_type="Cos", attn_type="Cos", preemb=False, preemb_path=''):
+    
+    def __init__(self, BS, q_len, kernel_size, filter_size, hidden_size, output_dim, emb_size,
+                emb_mod):
         """
+        Parameters:
         BS: batch size
         q_len: the query length
         kernel_size: the size of kernel
         filter_size: the number of filters
         hidden_size: the hidden layer of mlp
         output_dim: the output dim of the doc representation
-        
+        vocab_size: the size of the embedding matrix
+        emb_size: the dim of the word dim
+        preemb: the flag whether to train the embeddign
         """
 
-        super(MultiMatch, self).__init__()
+        super(QueryRep, self).__init__()
         self.BS = BS
         self.q_len = q_len
-        self.vocab_size = vocab_size
-        self.emb_size = emb_size
+        self.emb_mod = emb_mod
         self.hidden_size = hidden_size
-        self.preemb = preemb
-        self.sim_type = sim_type
+        #self.preemb = preemb
+        #elf.sim_type = sim_type
 
-        # embedding matrix
-        self.emb_mod = nn.Embedding(vocab_size, emb_size)
-        if preemb is True:
-            emb_data = load(preemb_path)
-            self.emb_mod.weight = nn.Parameter(torch.from_numpy(emb_data))
-        else:
-            init_tensor = torch.randn(vocab_size, emb_size).normal_(0, 5e-3)
-            self.emb_mod.weight = nn.Parameter(init_tensor)
+        
         
         # The 1-d convolution layer
         self.q_conv1 = nn.Conv1d(in_channels=emb_size, out_channels=filter_size,
@@ -187,26 +209,10 @@ class QueryRep(nn.Module):
         # mlp layer
         self.mlp = MLP(filter_size, hidden_size, output_dim)
 
-        
-    def generate_mask(self, q, d_pos, d_neg):
-        """ generate mask for q, d_pos, d_neg seperately
-            and pack them into Variable
-            q: LongTensor Variable (BS, qlen)
-            d_pos: LongTensor Variable (BS, dlen)
-            d_neg: LongTensor Variable (BS, d_len)
-            returns: q_mask, d_pos_mask, d_neg_mask
-        """
-        q_mask = torch.ne(q.data, 0).unsqueeze(2).float() # (BS, qlen, 1)
-        q_mask = Variable(q_mask, requires_grad=False)
-        d_pos_mask = torch.ne(d_pos.data, 0).unsqueeze(2).float()  # (BS, dlen, 1)
-        d_pos_mask = Variable(d_pos_mask, requires_grad=False)
-        d_neg_mask = torch.ne(d_neg.data, 0).unsqueeze(2).float()  # (BSm dlen, 1)
-        d_neg_mask = Variable(d_neg_mask, requires_grad=False)
-        return q_mask, d_pos_mask, d_neg_mask
-
 
     def forward(self, q, q_mask):
-        """ apply rel
+        """ 
+            Parameters:
             q: LongTensor (BS, qlen) Variable input
             d: LongTensor (BS, dlen) Variable input
             q_mask: non learnable Variable (BS, qLen, 1)

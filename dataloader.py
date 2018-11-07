@@ -6,13 +6,6 @@ import signal
 import configparser, argparse
 import ast
 import re
-
-from lib.tf_utils import non_neg_normalize
-from lib.data_utils import list_shuffle, pad_batch_list
-from lib.eval import write_run, compute_ndcg, compute_map
-from lib.tf_utils import np_softmax, non_neg_normalize
-from functools import partial
-from lib.NoamOpt import NoamOpt
 from itertools import combinations
 
 

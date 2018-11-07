@@ -4,33 +4,57 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from lib.torch_utils import Dot, Gaussian_ker, GenDotM, cossim, cossim1, MaxM_fromBatch
 import numpy as np
-from sublayers import MultiHeadAttention, MLP, DocRepAttention, QueryRep
+from sublayer import MultiHeadAttention, MLP, DocRepAttention, QueryRep
+
+from lib.data_utils import list_shuffle, load
+from math import floor
+
 
 
 class Attention(nn.Module):
-    def __init__(self, word_dim, query_length, doc_length, num_heads, kernel_size, filter_size, vocab_size
-                bias_mask=None, dropout=0.0, qrep_dim, hidden_size,  batch_size, preemb, emb_path):
+    def __init__(self, emb_size, query_length, doc_length, num_heads, kernel_size, filter_size, vocab_size,
+                dropout, qrep_dim, hidden_size,  batch_size,
+                preemb, emb_path):
+        """
+        Parameters:
+        vocab_size: the embedding matrix param
+        emb_size: the embedding matrix param
+        preemb: the flag
+        emb_path: the pretrained embeddding path   
+        """
+
+        super(Attention, self).__init__()
 	    
-        super(EncoderLayer, self).__init__()
-	    
+        # embedding matrix
+        self.emb_mod = nn.Embedding(vocab_size, emb_size)
+        if preemb is True:
+            emb_data = load(emb_path)
+            self.emb_mod.weight = nn.Parameter(torch.from_numpy(emb_data))
+        else:
+            init_tensor = torch.randn(vocab_size, emb_size).normal_(0, 5e-3)
+            self.emb_mod.weight = nn.Parameter(init_tensor)
+
         # multi-head-attention
-	    self.multi_head_attention = MultiHeadAttention(word_dim, query_length, doc_length, 
-	    			num_heads, bias_mask, dropout)
+        
+        self.multi_head_attention = MultiHeadAttention(emb_size, query_length, doc_length, 
+	    			            num_heads, self.emb_mod, dropout)
         # mlp layer
-	    self.MLP = MLP(word_dim, hidden_size, word_dim)
-	    # document representation layer
-	    self.DocRepAttention = DocRepAttention(batch_size, hidden_size, query_length, word_dim)
+        self.MLP = MLP(emb_size, hidden_size, emb_size)
+        # document representation layer
+        self.DocRepAttention = DocRepAttention(batch_size, hidden_size, query_length, emb_size)
         # query representation layer
         self.QueryRep = QueryRep(batch_size, query_length, kernel_size, filter_size,
-                    hidden_size, qrep_dim, vocab_size, word_dim, preemb, preemb_path)
+                    hidden_size, qrep_dim, emb_size, self.emb_mod)
 
     def generate_mask(self, q, d_pos, d_neg):
-        """ generate mask for q, d_pos, d_neg seperately
-            and pack them into Variable
-            q: LongTensor Variable (BS, qlen)
-            d_pos: LongTensor Variable (BS, dlen)
-            d_neg: LongTensor Variable (BS, d_len)
-            returns: q_mask, d_pos_mask, d_neg_mask
+        """
+        Parameters:
+        generate mask for q, d_pos, d_neg seperately
+        and pack them into Variable
+        q: LongTensor Variable (BS, qlen)
+        d_pos: LongTensor Variable (BS, dlen)
+        d_neg: LongTensor Variable (BS, d_len)
+        returns: q_mask, d_pos_mask, d_neg_mask
         """
         q_mask = torch.ne(q.data, 0).unsqueeze(2).float() # (BS, qlen, 1)
         q_mask = Variable(q_mask, requires_grad=False)
@@ -42,18 +66,27 @@ class Attention(nn.Module):
 
 
     def forward(self, q, d_pos, d_neg, q_mask, d_pos_mask, d_neg_mask):
+        """
+        Parameters:
+        q: LongTensor (BS, qlen) Variable input
+        d_pos, d_neg: LongTensor (BS, dlen) Variable input
+        q_mask: non learnable Variable (BS, qLen, 1)
+        d_pos_mask: non learnable Variable (BS, dLen, 1)
+        """
         # Multi-head attention
-        y = self.multi_head_attention(queries, doc)  #shape=[bs, query_len, dim]
+        d_pos, d_neg = self.multi_head_attention(q, d_pos, d_neg, q_mask, d_pos_mask, d_neg_mask)  #shape=[bs, query_len, dim]
 
         # Document self-attention representation
-        Drep = self.DocRepAttention(y)  # shape=[bs, 1, dim]
+        D_pos_rep = self.DocRepAttention(d_pos)  # shape=[bs, 1, dim]
+        D_neg_rep = self.DocRepAttention(d_neg)
 
         # Query global representation
-        Qrep = self.QueryRep(queries, q_mask) # shape= [bs, 1, dim]
+        Qrep = self.QueryRep(q, q_mask) # shape= [bs, 1, dim]
 
         # calculate the sim score
-        Score = cossim(Qrep, Drep) # shape = [bs, 1, 1]
-        
+        Score_pos = cossim(Qrep, D_pos_rep) # shape = [bs, 1, 1]
+        Score_neg = cossim(Qrep, D_neg_rep)
+
         return Score_pos, Score_neg
 
 
