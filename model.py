@@ -2,15 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-
+from lib.torch_utils import Dot, Gaussian_ker, GenDotM, cossim, cossim1, MaxM_fromBatch
 import numpy as np
-
 from sublayers import MultiHeadAttention, MLP, DocRepAttention, QueryRep
 
 
 class Attention(nn.Module):
     def __init__(self, word_dim, query_length, doc_length, num_heads, kernel_size, filter_size, vocab_size
-                bias_mask=None, dropout=0.0, qrep_dim, hidden_size,  batch_size, preemb, preemb_path):
+                bias_mask=None, dropout=0.0, qrep_dim, hidden_size,  batch_size, preemb, emb_path):
 	    
         super(EncoderLayer, self).__init__()
 	    
@@ -42,21 +41,20 @@ class Attention(nn.Module):
         return q_mask, d_pos_mask, d_neg_mask
 
 
-    def forward(self, queries, doc):
+    def forward(self, q, d_pos, d_neg, q_mask, d_pos_mask, d_neg_mask):
         # Multi-head attention
         y = self.multi_head_attention(queries, doc)  #shape=[bs, query_len, dim]
-	    
-        # MLP layer
-        y = self.MLP(y)
 
-        # Document global representation
+        # Document self-attention representation
         Drep = self.DocRepAttention(y)  # shape=[bs, 1, dim]
 
         # Query global representation
-        Qrep = self.QueryRep(queries, )
+        Qrep = self.QueryRep(queries, q_mask) # shape= [bs, 1, dim]
 
-
-        return Drep
+        # calculate the sim score
+        Score = cossim(Qrep, Drep) # shape = [bs, 1, 1]
+        
+        return Score_pos, Score_neg
 
 
 

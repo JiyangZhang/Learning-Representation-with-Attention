@@ -4,6 +4,7 @@ from torch.autograd import Variable
 from torch import optim
 import torch.nn.functional as F
 from torch.nn.utils.clip_grad import clip_grad_norm
+from dataloader import pair_data_generator
 
 import time
 import numpy as np
@@ -26,6 +27,16 @@ def load_dataset(path=None):
     with open(path, 'rb') as f:
         data = pickle.load(f, encoding="latin1")
     return data
+
+def _get_batch_index(self, seq, step):
+        n = len(seq)
+        res = []
+        for i in range(0, n, step):
+            res.append(seq[i:i + step])
+        # last batch
+        if len(res) * step < n:
+            res.append(seq[len(res) * step:])
+        return res
 
 def max_len(D):
     maxlen = 0
@@ -240,19 +251,15 @@ def int_handler(sess, model_path, saver, signal, frame):
     sys.exit(0)
 
 
-
-
-def train(config_path, resume_training=False):
+def load_params(config_path):
     """
     Load the parameters
     """
     config = configparser.ConfigParser()
     config.read(config_path)
-
-    batch_sampling_method = config['params']['batch_sampling_method']
-    model_name_str = config['hyperparams']['model_name_str']
     
     '''common parameters'''
+    model_name_str = ast.literal_eval(config['hyperparams']['model_name_str'])
     batch_size = ast.literal_eval(config['hyperparams']['batch_size'])  # batch_size
     vocab_size = ast.literal_eval(config['hyperparams']['vocab_size'])  # vocab_size
     emb_size = ast.literal_eval(config['hyperparams']['emb_size'])  # embedding dimension
@@ -263,6 +270,11 @@ def train(config_path, resume_training=False):
     hinge_margin = ast.literal_eval(config['hyperparams']['hinge_margin'])
     emb_tune = ast.literal_eval(config['commons']['emb_tune'])
     n_epoch = ast.literal_eval(config['hyperparams']['n_epoch']) # num of epochs
+    eval_every_num_update = ast.literal_eval(config[hyperparams]['eval_every_num_update'])
+    alpha = ast.literal_eval(config['hyperparams']['alpha'])  # weight decay
+    learning_rate = ast.literal_eval(config['hyperparams']['learning_rate'])
+    num_heads = ast.literal_eval(config['hyperparams']['num_heads'])
+    emb_path = ast.literal_eval(config['hyperparams']['emb_path'])
     # q and doc cuts
     q_len = ast.literal_eval(config['hyperparams']['q_len'])
     d_len = ast.literal_eval(config['hyperparams']['d_len'])
@@ -274,20 +286,38 @@ def train(config_path, resume_training=False):
     fold = ast.literal_eval(config['commons']['fold'])
     
     '''representation hyperparams'''
-    filt_size_rep = ast.literal_eval(config['rep']['filt_size'])
-    kernel_size_rep = ast.literal_eval(config['rep']['kernel_size'])
-    output_dim_rep = ast.literal_eval(config['rep']['output_dim'])
+    filt_size = ast.literal_eval(config['rep']['filt_size'])
+    kernel_size = ast.literal_eval(config['rep']['kernel_size'])
+    output_dim = ast.literal_eval(config['rep']['output_dim'])
 
     # for sampleQ sampleD prepare_data()
     q_sample_size = ast.literal_eval(config['hyperparams']['q_sample_size'])
     docpair_sample_size = ast.literal_eval(config['hyperparams']['docpair_sample_size'])
     
-    alpha = ast.literal_eval(config['hyperparams']['alpha'])  # weight decay
-    learning_rate = ast.literal_eval(config['hyperparams']['learning_rate'])
+   
+    # parameters that maybe useless
+    pool_mode = config['hyperparams']['pool_mode']
+    Mtopk = ast.literal_eval(config['hyperparams']['Mtopk'])
+    
+    """construct hyperparam dicts"""
+    param_dict = {"batch_size": batch_size, "vocab_size": vocab_size, "emb_size": emb_size, 
+                  "hidden_sizes": hidden_sizes, "dropout": dropout, "preemb": preemb, "sim_type": sim_type,
+                  "hinge_margin": hinge_margin, "emb_tune": emb_tune, "n_epoch": n_epoch, "alpha": alpha,  
+                  "eval_every_num_update": eval_every_num_update, "emb_path": emb_path, "num_heads": num_heads,
+                  "q_len": q_len, "d_len": d_len, "data_base_path": data_base_path, "model_name_str": model_name_str, 
+                  "model_base_path": model_base_path, "dataset": dataset, "fold": fold, "learning_rate": learning_rate
+                    }
 
-    # new hyper parameters
-    num_heads = ast.literal_eval(config['hyperparams']['num_heads'])
-    emb_path = ast.literal_eval(config['hyperparams']['emb_path'])
+    rep_param_dict = {"filt_size": filt_size, "kernel_size": kernel_size,
+                      "output_dim": output_dim}
+
+    return param_dict, rep_param_dict
+
+def train(config_path, resume_training=False):
+    
+    # Load the parameters
+    param_dict, rep_param_dict = load_params(config_path)
+    
     # parameters that maybe useless
     pool_mode = config['hyperparams']['pool_mode']
     Mtopk = ast.literal_eval(config['hyperparams']['Mtopk'])
@@ -295,22 +325,21 @@ def train(config_path, resume_training=False):
     # use cuda flag
     use_cuda = True
     
-
     """
     the tranining directory
     """
     # load data
-    TRAIN_DIR01 = "{}/MQ2007/S1/".format(data_base_path)
-    TRAIN_DIR02 = "{}/MQ2007/S2/".format(data_base_path)
-    TRAIN_DIR03 = "{}/MQ2007/S3/".format(data_base_path)
-    TRAIN_DIR04 = "{}/MQ2007/S4/".format(data_base_path)
-    TRAIN_DIR05 = "{}/MQ2007/S5/".format(data_base_path)
+    TRAIN_DIR01 = "{}/MQ2007/S1/".format(param_dict["data_base_path"])
+    TRAIN_DIR02 = "{}/MQ2007/S2/".format(param_dict["data_base_path"])
+    TRAIN_DIR03 = "{}/MQ2007/S3/".format(param_dict["data_base_path"])
+    TRAIN_DIR04 = "{}/MQ2007/S4/".format(param_dict["data_base_path"])
+    TRAIN_DIR05 = "{}/MQ2007/S5/".format(param_dict["data_base_path"])
 
-    TEST_DIR01 = '{}/MQ2007/S1/'.format(data_base_path)
-    TEST_DIR02 = '{}/MQ2007/S2/'.format(data_base_path)
-    TEST_DIR03 = '{}/MQ2007/S3/'.format(data_base_path)
-    TEST_DIR04 = '{}/MQ2007/S4/'.format(data_base_path)
-    TEST_DIR05 = '{}/MQ2007/S5/'.format(data_base_path)
+    TEST_DIR01 = '{}/MQ2007/S1/'.format(param_dict["data_base_path"])
+    TEST_DIR02 = '{}/MQ2007/S2/'.format(param_dict["data_base_path"])
+    TEST_DIR03 = '{}/MQ2007/S3/'.format(param_dict["data_base_path"])
+    TEST_DIR04 = '{}/MQ2007/S4/'.format(param_dict["data_base_path"])
+    TEST_DIR05 = '{}/MQ2007/S5/'.format(param_dict["data_base_path"])
 
     train_files01 = glob.glob("{}/data0.pkl".format(TRAIN_DIR01))
     train_files02 = glob.glob("{}/data0.pkl".format(TRAIN_DIR02))
@@ -323,6 +352,12 @@ def train(config_path, resume_training=False):
     test_files03 = glob.glob("{}/testdata0.pkl".format(TEST_DIR03))
     test_files04 = glob.glob("{}/testdata0.pkl".format(TEST_DIR04))
     test_files05 = glob.glob("{}/testdata0.pkl".format(TEST_DIR05))
+
+    fold = param_dict["fold"]
+    model_base_path = param_dict['model_base_path']
+    model_name_str = param_dict['model_name_str']
+    q_len = param_dict["q_len"]
+    d_len = param_dict["d_len"]
 
     if fold == 1:
         train_files = train_files01 + train_files02 + train_files03
@@ -345,43 +380,52 @@ def train(config_path, resume_training=False):
         test_files = test_files03[0]
         rel_path = '{}/{}/tmp/test/S3.qrels'.format(model_base_path, model_name_str)
     else:
-        raise ValueError("wrong fold num {}".format(fold))
+        raise ValueError("wrong fold num {}".format(fold))   
     
-    """!!!!!!!!!!"""    
-    X = prepare_train_data(0, 3, q_len, d_len, train_files)
-    valid_data = load_dataset(test_files)
-
-
     """
     Build the model
     """
+    emb_size = param_dict['emb_size']
+    num_heads = param_dict['num_heads']
+    kernel_size = rep_param_dict['kernel_size']
+    filt_size = rep_param_dict['filt_size']
+    vocab_size = param_dict['vocab_size']
+    output_dim = param_dict['output_dim']
+    hidden_size = param_dict['hidden_size']
+    batch_size = param_dict['batch_size']
+    preemb = param_dict['preemb']
+    emb_path = param_dict['emb_path']
+    
     model = Attention(word_dim=emb_size, query_length=q_len, doc_length=d_len, num_heads=num_heads, 
-        kernel_size=kernel_size_rep, filter_size=filt_size, vocab_size=vocab_size, bias_mask=None,
-        dropout=0.0, qrep_dim=output_dim_rep, hidden_size=hidden_size,  batch_size=batch_size, preemb=preemb,
-        preemb_path=emb_path)
+        kernel_size=kernel_size, filter_size=filt_size, vocab_size=vocab_size, bias_mask=None,
+        dropout=0.0, qrep_dim=output_dim, hidden_size=hidden_size, batch_size=batch_size, preemb=preemb,
+        emb_path=emb_path)
 
     if use_cuda:
         model.cuda()
     # optimizer
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=alpha)
+    optimizer = optim.Adam(model.parameters(), lr=param_dict['learning_rate'], weight_decay=param_dict['alpha'])
     # loss func
     loss = nn.MarginRankingLoss(margin=hinge_margin, size_average=True)
     # experiment
     print("Experiment")
+
     if resume_training == False:
         f_log = open('{}/{}/logs/training_log.txt'.format(model_base_path, model_name_str), 'w+', 1)
         valid_log = open('{}/{}/logs/valid_log.txt'.format(model_base_path, model_name_str), 'w+', 1)
     else:
         f_log = open('{}/{}/logs/training_log.txt'.format(model_base_path, model_name_str), 'a+', 1)
         valid_log = open('{}/{}/logs/valid_log.txt'.format(model_base_path, model_name_str), 'a+', 1)
+    
     # model_file
     model_file = '{}/{}/saves/model_file'.format(model_base_path, model_name_str)
     
-
     """
     TRAINING
     """
 
+    # define the parameters
+    n_epoch = param_dict['n_epoch']
     # init best validation MAP value
     best_MAP = 0.0
     best_NDCG1 = 0.0
@@ -392,19 +436,14 @@ def train(config_path, resume_training=False):
         with open('{}/{}/saves/best_MAP.pkl'.format(model_base_path, model_name_str), 'rb') as f_MAP:
             best_MAP = pickle.load(f_MAP)
         print("loaded model, and resume training now")
-    # preparing batch data
-    file_count = 0
-    # gen Hingeloss Y labels always 1 (S+ > S-)
-    if use_cuda:
-        Y = Variable(torch.ones(batch_size), requires_grad=False).cuda()
-    else:
-        Y = Variable(torch.ones(batch_size), requires_grad=False)
+
     for epoch in range(1, n_epoch + 1):
         '''load_data'''
         data = load_dataset(train_files)
         print("loaded {}".format(train_files))
         '''prepare_data'''
-        [Q, D_pos, D_neg, L] = prepare_data_sampleQ_BM25distro(data, q_sample_size, docpair_sample_size, q_len)
+        [Q, D_pos, D_neg, L] = pair_data_generator(data, q_len)
+        valid_data = load_dataset(test_files)
         ''' shuffle data'''
         train_data = list_shuffle(Q, D_pos, D_neg, L)
         '''training func'''
@@ -430,6 +469,9 @@ def train(config_path, resume_training=False):
             optimizer.zero_grad()
             t1 = time.time()
             q_mask, d_pos_mask, d_neg_mask = model.generate_mask(Q, D_pos, D_neg)
+            """
+            need to do the modification i the model.py
+            """
             S_pos, S_neg = model(Q, D_pos, D_neg, q_mask, d_pos_mask, d_neg_mask)
             Loss = hinge_loss(S_pos, S_neg, 1.0)
             Loss.backward()
@@ -439,24 +481,135 @@ def train(config_path, resume_training=False):
             print("epoch {} batch {} training cost: {} using {}s" \
             .format(epoch, batch_count_tr, Loss.data[0], t2-t1))
             f_log.write("epoch {} batch {} training cost: {}, using {}s".format(epoch, batch_count_tr, Loss.data[0], t2 - t1) + '\n')
-        file_count += 1
-        if file_count % 4 == 0:
-            # do rapid validation
-            ndcg_list, mapvalue = validation(model, model_name_str,
-                                             data_base_path, model_base_path)  # pass the training compuational graph placeholder to valid function to evaluate with the same set of parameters
-            print("epoch :{}, pkl count: {}, NDCG".format(epoch, file_count), ndcg_list)
-            print("MAP: {}".format(mapvalue))
-            # check if this valid period is the best and update best_MAP, save model to disk
-            if mapvalue > best_MAP:
-                best_MAP = mapvalue
-                with open('{}/{}/saves/best_MAP.pkl'.format(model_base_path, model_name_str), 'wb') as f_MAP:
-                    pickle.dump(best_MAP, f_MAP)
-                # save model params after several epoch
-                model_file = '{}/{}/saves/model_file'.format(model_base_path, model_name_str)
-                torch.save(model.state_dict(), model_file)
-                print("successfully saved model to the path {}".format(model_file))
-            valid_log.write("{} {} {} {}".format(ndcg_list[1][0], ndcg_list[1][1], ndcg_list[1][2], ndcg_list[1][3]))
-            valid_log.write(" MAP: {}".format(mapvalue))
-            valid_log.write('\n')
+            
+            """
+            evaluate part
+            """
+            if total_count_tr % param_dict['eval_every_num_update'] == 0:
+                if valid_data is not None:
+                    MAP, NDCGs = evaluate(model, valid_data, rel_path, mode)
+                    print(MAP, NDCGs)
+                    valid_log.write("epoch {}, batch {}, MAP: {}, NDCGs: {} {} {} {}".format(
+                                            epoch + 1, i + 1, MAP, NDCGs[1][0], NDCGs[1][1], NDCGs[1][2], NDCGs[1][3]))
+                    if MAP > best_MAP:  # save this best model
+                        best_MAP = MAP
+                        with open('{}/{}/saves/best_MAP.pkl'.format(model_base_path, model_name_str), 'wb') as f_MAP:
+                            pickle.dump(best_MAP, f_MAP)
+                        # save model params after several epoch
+                        model_file = '{}/{}/saves/model_file'.format(model_base_path, model_name_str)
+                        torch.save(model.state_dict(), model_file)
+                        print("successfully saved model to the path {}".format(model_file))
+
+
+                    valid_log.write("{} {} {} {}".format(ndcg_list[1][0], ndcg_list[1][1], ndcg_list[1][2], ndcg_list[1][3]))
+                    valid_log.write(" MAP: {}".format(mapvalue))
+                    valid_log.write('\n')
     f_log.close()
     valid_log.close()
+
+
+def predict(model, data, mode="valid"): #pass the predict data
+    # Load the parameters
+    param_dict, rep_param_dict = load_params(config_path)
+
+    '''hyper params'''
+    batch_size = 128  # batch_size
+    # q and doc cuts
+    q_len = param_dict['q_len']
+    d_len = param_dict['d_len']
+
+    use_cuda = True
+    # run path
+    if mode == "valid":
+        RESULTS_DIR = param_dict["model_base_path"] + "/" + \
+                      param_dict["model_name_str"] + "/result/valid/"
+    else:
+        RESULTS_DIR = param_dict["model_base_path"] + "/" + \
+                      param_dict["model_name_str"] + "/result/test/"
+
+    run_path = RESULTS_DIR + 'run.txt'
+    all_run_list = []
+    all_pred = []
+    for topic_num in data:
+        Q = []
+        D = []
+        meta_dict = {'topic_num':[], 'docno':[]}
+        batch_id = 0
+        num_batch = int(math.ceil(len(data[topic_num]['docs']) * 1.0 / batch_size))
+        for i in range(len(data[topic_num]['docs'])):
+            Q.append(data[topic_num]['query'])
+            D.append(data[topic_num]['docs'][i])
+            meta_dict['topic_num'].append(topic_num)
+            meta_dict['docno'].append(data[topic_num]['docno'][i])
+        # padding
+        if use_cuda:
+            Q_test = Variable(torch.LongTensor(pad_batch_list(Q, max_len=q_len, padding_id=0)), requires_grad=False).cuda()
+            D_test = Variable(torch.LongTensor(pad_batch_list(D, max_len=d_len, padding_id=0)), requires_grad=False).cuda()
+        else:
+            Q_test = Variable(torch.LongTensor(pad_batch_list(Q, max_len=q_len, padding_id=0)), requires_grad=False)
+            D_test = Variable(torch.LongTensor(pad_batch_list(D, max_len=d_len, padding_id=0)), requires_grad=False)
+        scores = []
+        for batch_id in range(num_batch):
+            Q_value = Q_test[batch_id * batch_size: (batch_id + 1)* batch_size]
+            D_value = D_test[batch_id * batch_size: (batch_id + 1)* batch_size]
+            Q_mask, D_mask, _ = model.generate_mask(Q_value, D_value, D_value)
+            batch_rel, _ = model(Q_value, D_value, D_value, Q_mask, D_mask, D_mask)  # in test phase, no dropout
+            if use_cuda:
+                batch_scores = batch_rel.data.cpu().numpy().tolist()
+            else:
+                batch_scores = batch_rel.data.numpy().tolist()
+            scores += batch_scores
+        np_scores = np.asarray(scores)
+        np_scores = non_neg_normalize(np_scores)
+        scores = np_scores.tolist()
+        run_list = zip(meta_dict['topic_num'], meta_dict['docno'], scores)
+        print("run_file for topic {} created".format(topic_num))
+        all_run_list += run_list
+    write_run(all_run_list, run_path)
+    return scores
+
+
+def evaluate(model, data, rel_path, mode="valid"):
+    # tmp file path
+    param_dict, rep_param_dict = load_params(config_path)
+
+    if mode == "valid":
+        tmp_path = "/{}/{}/tmp/valid/temp.txt".format(
+            param_dict['model_base_path'],
+            param_dict['model_name_str'])
+        run_path = "/{}/{}/result/valid/run.txt".format(
+            param_dict['model_base_path'],
+            param_dict['model_name_str'])
+    else:
+        tmp_path = "/{}/{}/tmp/test/temp.txt".format(
+            param_dict['model_base_path'],
+            param_dict['model_name_str'])
+        run_path = "/{}/{}/result/test/run.txt".format(
+            param_dict['model_base_path'],
+            param_dict['model_name_str'])
+    
+    predict(model, data=data, mode=mode)
+    # call trec eval script
+    NDCGs = compute_ndcg(run_path, rel_path, tmp_path)
+    MAP = compute_map(run_path, rel_path, tmp_path)
+    return MAP, NDCGs
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", type=str, default="")
+    parser.add_argument("--mode", type=str, default="train")
+    parser.add_argument("--resume", type=str, default="True")
+    args = parser.parse_args()
+    if args.mode == "train":
+        if args.resume == "True":
+            train(args.path, resume=True)
+        elif args.resume == "False":
+            train(args.path, resume=False)
+        else:
+            raise ValueError("resume arg ", args.resume, "is not valid")
+    else:
+        test(args.path)
+
+
+if __name__ == '__main__':
+    main()
