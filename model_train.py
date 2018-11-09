@@ -379,71 +379,72 @@ def train(config_path, resume=True):
 
     for epoch in range(1, n_epoch + 1):
         '''load_data'''
-        data = load_dataset(train_files)
-        print("loaded {}".format(train_files))
-        '''prepare_data'''
-        [Q, D_pos, D_neg, L] = pair_data_generator(data, q_len)
-        valid_data = load_dataset(test_files)
-        ''' shuffle data'''
-        train_data = list_shuffle(Q, D_pos, D_neg, L)
-        '''training func'''
-        
-        num_batch = len(train_data[0]) // batch_size
-        for batch_count in range(num_batch):
-            Q = train_data[0][batch_size * batch_count: batch_size * (batch_count + 1)]
-            D_pos = train_data[1][batch_size * batch_count: batch_size * (batch_count + 1)]
-            D_neg = train_data[2][batch_size * batch_count: batch_size * (batch_count + 1)]
-            L = train_data[3][batch_size * batch_count: batch_size * (batch_count + 1)]
-            if use_cuda:
-                Q = Variable(torch.LongTensor(pad_batch_list(Q, max_len=q_len, padding_id=0)), requires_grad=False).cuda()
-                D_pos = Variable(torch.LongTensor(pad_batch_list(D_pos, max_len=d_len, padding_id=0)), requires_grad=False).cuda()
-                D_neg = Variable(torch.LongTensor(pad_batch_list(D_neg, max_len=d_len, padding_id=0)), requires_grad=False).cuda()
-                L = Variable(torch.FloatTensor(L), requires_grad=False).cuda()
-            else:
-                Q = Variable(torch.LongTensor(pad_batch_list(Q, max_len=q_len, padding_id=0)), requires_grad=False)
-                D_pos = Variable(torch.LongTensor(pad_batch_list(D_pos, max_len=d_len, padding_id=0)), requires_grad=False)
-                D_neg = Variable(torch.LongTensor(pad_batch_list(D_neg, max_len=d_len, padding_id=0)), requires_grad=False)
-                L = Variable(torch.FloatTensor(L), requires_grad=False)
+        for f in train_files:
+            data = load_dataset(f)
+            print("loaded {}".format(f))
+            '''prepare_data'''
+            [Q, D_pos, D_neg, L] = pair_data_generator(data, q_len)
+            valid_data = load_dataset(test_files)
+            ''' shuffle data'''
+            train_data = list_shuffle(Q, D_pos, D_neg, L)
+            '''training func'''
             
-            # run on this batch
-            optimizer.zero_grad()
-            t1 = time.time()
-            q_mask, d_pos_mask, d_neg_mask = model.generate_mask(Q, D_pos, D_neg)
-            """
-            need to do the modification i the model.py
-            """
-            S_pos, S_neg = model(Q, D_pos, D_neg, q_mask, d_pos_mask, d_neg_mask)
-            Loss = hinge_loss(S_pos, S_neg, 1.0)
-            Loss.backward()
-            optimizer.step()
-            t2 = time.time()
-            batch_count_tr += 1
-            print("epoch {} batch {} training cost: {} using {}s" \
-            .format(epoch, batch_count+1, Loss.data[0], t2-t1))
-            f_log.write("epoch {} batch {} training cost: {}, using {}s".format(epoch, batch_count+1, Loss.data[0], t2 - t1) + '\n')
-            
-            """
-            evaluate part
-            """
-            if batch_count_tr % param_dict['eval_every_num_update'] == 0:
-                if valid_data is not None:
-                    MAP, NDCGs = evaluate(config_path, model, valid_data, rel_path, mode="valid")
-                    print(MAP, NDCGs)
-                    valid_log.write("epoch {}, batch {}, MAP: {}, NDCGs: {} {} {} {}".format(
-                                            epoch + 1, batch_count + 1, MAP, NDCGs[1][0], NDCGs[1][1], NDCGs[1][2], NDCGs[1][3]))
-                    if MAP > best_MAP:  # save this best model
-                        best_MAP = MAP
-                        with open('{}/{}/saves/best_MAP.pkl'.format(model_base_path, model_name_str), 'wb') as f_MAP:
-                            pickle.dump(best_MAP, f_MAP)
-                        # save model params after several epoch
-                        model_file = '{}/{}/saves/model_file'.format(model_base_path, model_name_str)
-                        torch.save(model.state_dict(), model_file)
-                        print("successfully saved model to the path {}".format(model_file))
+            num_batch = len(train_data[0]) // batch_size
+            for batch_count in range(num_batch):
+                Q = train_data[0][batch_size * batch_count: batch_size * (batch_count + 1)]
+                D_pos = train_data[1][batch_size * batch_count: batch_size * (batch_count + 1)]
+                D_neg = train_data[2][batch_size * batch_count: batch_size * (batch_count + 1)]
+                L = train_data[3][batch_size * batch_count: batch_size * (batch_count + 1)]
+                if use_cuda:
+                    Q = Variable(torch.LongTensor(pad_batch_list(Q, max_len=q_len, padding_id=0)), requires_grad=False).cuda()
+                    D_pos = Variable(torch.LongTensor(pad_batch_list(D_pos, max_len=d_len, padding_id=0)), requires_grad=False).cuda()
+                    D_neg = Variable(torch.LongTensor(pad_batch_list(D_neg, max_len=d_len, padding_id=0)), requires_grad=False).cuda()
+                    L = Variable(torch.FloatTensor(L), requires_grad=False).cuda()
+                else:
+                    Q = Variable(torch.LongTensor(pad_batch_list(Q, max_len=q_len, padding_id=0)), requires_grad=False)
+                    D_pos = Variable(torch.LongTensor(pad_batch_list(D_pos, max_len=d_len, padding_id=0)), requires_grad=False)
+                    D_neg = Variable(torch.LongTensor(pad_batch_list(D_neg, max_len=d_len, padding_id=0)), requires_grad=False)
+                    L = Variable(torch.FloatTensor(L), requires_grad=False)
+                
+                # run on this batch
+                optimizer.zero_grad()
+                t1 = time.time()
+                q_mask, d_pos_mask, d_neg_mask = model.generate_mask(Q, D_pos, D_neg)
+                """
+                need to do the modification i the model.py
+                """
+                S_pos, S_neg = model(Q, D_pos, D_neg, q_mask, d_pos_mask, d_neg_mask)
+                Loss = hinge_loss(S_pos, S_neg, 1.0)
+                Loss.backward()
+                optimizer.step()
+                t2 = time.time()
+                batch_count_tr += 1
+                print("epoch {} batch {} training cost: {} using {}s" \
+                .format(epoch, batch_count+1, Loss.data[0], t2-t1))
+                f_log.write("epoch {} batch {} training cost: {}, using {}s".format(epoch, batch_count+1, Loss.data[0], t2 - t1) + '\n')
+                
+                """
+                evaluate part
+                """
+                if batch_count_tr % param_dict['eval_every_num_update'] == 0:
+                    if valid_data is not None:
+                        MAP, NDCGs = evaluate(config_path, model, valid_data, rel_path, mode="valid")
+                        print(MAP, NDCGs)
+                        valid_log.write("epoch {}, batch {}, MAP: {}, NDCGs: {} {} {} {}".format(
+                                                epoch + 1, batch_count + 1, MAP, NDCGs[1][0], NDCGs[1][1], NDCGs[1][2], NDCGs[1][3]))
+                        if MAP > best_MAP:  # save this best model
+                            best_MAP = MAP
+                            with open('{}/{}/saves/best_MAP.pkl'.format(model_base_path, model_name_str), 'wb') as f_MAP:
+                                pickle.dump(best_MAP, f_MAP)
+                            # save model params after several epoch
+                            model_file = '{}/{}/saves/model_file'.format(model_base_path, model_name_str)
+                            torch.save(model.state_dict(), model_file)
+                            print("successfully saved model to the path {}".format(model_file))
 
 
-                    valid_log.write("{} {} {} {}".format(NDCGs[1][0], NDCGs[1][1], NDCGs[1][2], NDCGs[1][3]))
-                    valid_log.write(" MAP: {}".format(MAP))
-                    valid_log.write('\n')
+                        valid_log.write("{} {} {} {}".format(NDCGs[1][0], NDCGs[1][1], NDCGs[1][2], NDCGs[1][3]))
+                        valid_log.write(" MAP: {}".format(MAP))
+                        valid_log.write('\n')
     f_log.close()
     valid_log.close()
 

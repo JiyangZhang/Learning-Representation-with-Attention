@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from lib.torch_utils import Dot, Gaussian_ker, GenDotM, cossim, cossim1, MaxM_fromBatch
 import numpy as np
-from sublayer import MultiHeadAttention, MLP, DocRepAttention, QueryRep
+from sublayer import MultiHeadAttention, MLP, GloRepAttention
 
 from lib.data_utils import list_shuffle, load
 from math import floor
@@ -41,10 +41,8 @@ class Attention(nn.Module):
         # mlp layer
         self.MLP = MLP(emb_size, hidden_size, emb_size)
         # document representation layer
-        self.DocRepAttention = DocRepAttention(batch_size, hidden_size, query_length, emb_size)
-        # query representation layer
-        self.QueryRep = QueryRep(batch_size, query_length, kernel_size, filter_size,
-                    hidden_size, qrep_dim, emb_size, self.emb_mod)
+        self.GloRepAttention = GloRepAttention(batch_size, hidden_size, query_length, emb_size)
+
 
     def generate_mask(self, q, d_pos, d_neg):
         """
@@ -77,15 +75,15 @@ class Attention(nn.Module):
         d_pos, d_neg = self.multi_head_attention(q, d_pos, d_neg, q_mask, d_pos_mask, d_neg_mask)  #shape=[bs, query_len, dim]
 
         # Document self-attention representation
-        D_pos_rep = self.DocRepAttention(d_pos)  # shape=[bs, 1, dim]
-        D_neg_rep = self.DocRepAttention(d_neg)
+        D_pos_rep = self.GloRepAttention(d_pos)  # shape=[bs, 1, dim]
+        D_neg_rep = self.GloRepAttention(d_neg)
 
         # Query global representation
-        Qrep = self.QueryRep(q, q_mask) # shape= [bs, 1, dim]
-
+        q_att, _ = self.multi_head_attention(q, q, q, q_mask, q_mask, q_mask)  #shape=[bs, query_len, dim]
+        Q_rep = self.GloRepAttention(q_att)
         # calculate the sim score
-        Score_pos = cossim(Qrep, D_pos_rep) # shape = [bs, 1, 1]
-        Score_neg = cossim(Qrep, D_neg_rep)
+        Score_pos = cossim(Q_rep, D_pos_rep) # shape = [bs, 1, 1]
+        Score_neg = cossim(Q_rep, D_neg_rep)
 
         return Score_pos, Score_neg
 

@@ -5,7 +5,6 @@ from torch.autograd import Variable
 import numpy as np
 
 
-
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_size, output_dim):
         super(MLP, self).__init__()
@@ -24,12 +23,12 @@ class MultiHeadAttention(nn.Module):
     Multi-head attention as per https://arxiv.org/pdf/1706.03762.pdf
     Refer Figure 2
     """
-    def __init__(self, word_dim, query_length, doc_length, num_heads, emb_mod, dropout=0.0):
+    def __init__(self, word_dim, query_length, key_len, num_heads, emb_mod, dropout=0.0):
         """
             Parameters:
             word_dim: The dimension of word embedding
             query_length: The number of words in the query
-            doc_length: The number of words in the document
+            key_len: The number of words in the document
             num_heads: Number of attention heads
             dropout: Dropout probability (Should be non-zero only during training)
         """
@@ -111,7 +110,7 @@ class MultiHeadAttention(nn.Module):
         for doc in d_list:
             # calculate the probability
             logits = torch.matmul(queries, doc.permute(0, 1, 3, 2))  
-            #SHAPE=[bs, num_heads, query_length, doc_length]
+            #SHAPE=[bs, num_heads, query_length, key_len]
 
             # Convert to probabilites
             weights = nn.functional.softmax(logits, dim=-1)  # PROBLEM ! dim 
@@ -131,7 +130,8 @@ class MultiHeadAttention(nn.Module):
 
         return d_output[0], d_output[1]
 
-class DocRepAttention(nn.Module):
+
+class GloRepAttention(nn.Module):
     
     def __init__(self, batch_size, hidden_size, query_length, word_dim):
         """
@@ -141,13 +141,13 @@ class DocRepAttention(nn.Module):
         query_length: the length of the query
         word_dim: dim of the embedding
         """
-        super(DocRepAttention, self).__init__()
+        super(GloRepAttention, self).__init__()
         self.hidden_size = hidden_size
         self.batch_size = batch_size
         self.word_dim = word_dim
         self.query_length = query_length
 
-        self.u_w = nn.Parameter(torch.Tensor((batch_size, 1, word_dim)))
+        self.u_w = nn.Parameter(torch.Tensor(batch_size, 1, word_dim))
         self.u_w.data.uniform_(-0.1, 0.1)
         self.mlp = MLP(word_dim, hidden_size, word_dim)
         
@@ -161,6 +161,8 @@ class DocRepAttention(nn.Module):
         u_t = self.mlp(doc_rep) # shape=[bs, q_len, dim]
 
         # calculate the logits and weights
+        print(self.u_w.size())
+        print(u_t.size())
         logits = torch.matmul(u_t, self.u_w.permute(0, 2, 1))  #SHAPE=[bs, query_length, query_length]
         weights = nn.functional.softmax(logits, dim=-1)  # PROBLEM ! dim SHAPE = [BS, q_l, q_l] 
 
@@ -169,73 +171,5 @@ class DocRepAttention(nn.Module):
         # shape = [bs, 1, dim]
 
         return gloDoc
-
-
-class QueryRep(nn.Module):
-    
-    def __init__(self, BS, q_len, kernel_size, filter_size, hidden_size, output_dim, emb_size,
-                emb_mod):
-        """
-        Parameters:
-        BS: batch size
-        q_len: the query length
-        kernel_size: the size of kernel
-        filter_size: the number of filters
-        hidden_size: the hidden layer of mlp
-        output_dim: the output dim of the doc representation
-        vocab_size: the size of the embedding matrix
-        emb_size: the dim of the word dim
-        preemb: the flag whether to train the embeddign
-        """
-
-        super(QueryRep, self).__init__()
-        self.BS = BS
-        self.q_len = q_len
-        self.emb_mod = emb_mod
-        self.hidden_size = hidden_size
-        #self.preemb = preemb
-        #elf.sim_type = sim_type
-
-        
-        
-        # The 1-d convolution layer
-        self.q_conv1 = nn.Conv1d(in_channels=emb_size, out_channels=filter_size,
-                                kernel_size=kernel_size, stride=1, padding=0,
-                                dilation=1, bias=True)
-        # nonlinear layer
-        self.tanh = nn.Tanh()
-        # maxpooling layer
-        self.Maxpool = nn.MaxPool1d(kernel_size=q_len)
-        # mlp layer
-        self.mlp = MLP(filter_size, hidden_size, output_dim)
-
-
-    def forward(self, q, q_mask):
-        """ 
-            Parameters:
-            q: LongTensor (BS, qlen) Variable input
-            d: LongTensor (BS, dlen) Variable input
-            q_mask: non learnable Variable (BS, qLen, 1)
-            d_mask: non learnable Variable (BS, dLen, 1)
-            returns R1, R2, R3: relevance of 3 level (BS,)
-        """
-        # mask out padding's variable embeddings
-        q_emb = self.emb_mod(q) * q_mask  # (BS, qlen, emb_size)
-        # shuffle the dim
-        q_shuffle = q_emb.permute(0, 2, 1)  # (BS, emb_size, qlen)
-
-        # conv1d layer
-        q_conv = self.q_conv1(q_emb) # (BS, filter_size, q_len)
-
-        # activation layer
-        q_tanh = self.tanh(q_conv) # (BS, filter_size, q_len)
-
-        # max-pooling layer
-        q_pool = self.Maxpool(q_tanh) # (BS, filter_size, 1)
-        
-        # mlp layer 
-        q_rep = self.mlp(q_pool.permute(0, 2, 1)) # (BS, 1, outputdim)
-
-        return q_rep
 
 
