@@ -409,6 +409,7 @@ def train(config_path, resume=True):
                 # run on this batch
                 optimizer.zero_grad()
                 t1 = time.time()
+
                 q_mask, d_pos_mask, d_neg_mask = model.generate_mask(Q, D_pos, D_neg)
                 """
                 need to do the modification i the model.py
@@ -453,11 +454,11 @@ def predict(config_path, model, data, mode="valid"): #pass the predict data
     # Load the parameters
     param_dict, rep_param_dict = load_params(config_path)
 
-    '''hyper params'''
-    batch_size = 128  # batch_size
-    # q and doc cuts
+    '''load hyper params'''
     q_len = param_dict['q_len']
     d_len = param_dict['d_len']
+    batch_size = 32
+
 
     use_cuda = True
     # run path
@@ -477,6 +478,7 @@ def predict(config_path, model, data, mode="valid"): #pass the predict data
         meta_dict = {'topic_num':[], 'docno':[]}
         batch_id = 0
         num_batch = int(math.ceil(len(data[topic_num]['docs']) * 1.0 / batch_size))
+        #print(num_batch)
         for i in range(len(data[topic_num]['docs'])):
             Q.append(data[topic_num]['query'])
             D.append(data[topic_num]['docs'][i])
@@ -503,9 +505,10 @@ def predict(config_path, model, data, mode="valid"): #pass the predict data
         np_scores = np.asarray(scores)
         np_scores = non_neg_normalize(np_scores)
         scores = np_scores.tolist()
-        run_list = zip(meta_dict['topic_num'], meta_dict['docno'], scores)
+        run_list = list(zip(meta_dict['topic_num'], meta_dict['docno'], scores))
         print("run_file for topic {} created".format(topic_num))
         all_run_list += run_list
+        #print(all_run_list)
     write_run(all_run_list, run_path)
     return scores
 
@@ -529,7 +532,7 @@ def evaluate(config_path, model, data, rel_path, mode="valid"):
             param_dict['model_base_path'],
             param_dict['model_name_str'])
     
-    predict(config_path, model, data=data, mode=mode)
+    predict(config_path, model=model, data=data, mode=mode)
     # call trec eval script
     NDCGs = compute_ndcg(run_path, rel_path, tmp_path)
     MAP = compute_map(run_path, rel_path, tmp_path)

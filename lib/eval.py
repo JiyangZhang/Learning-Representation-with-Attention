@@ -26,7 +26,8 @@ def write_run(run_list, out_path):
     for (qry_no, res_list) in run_dict.items():
         res_list = sorted(res_list, reverse=True)
         for rnk, (score, doc_no) in enumerate(res_list):
-            res_strs.append(out_fmt.format(qry_no, doc_no, rnk + 1, score))
+            #print(score[0])
+            res_strs.append(out_fmt.format(qry_no, doc_no, rnk + 1, score[0][0]))
 
     out_file = open(out_path, "w")
     out_file.write("\n".join(res_strs))

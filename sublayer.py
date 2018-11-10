@@ -147,7 +147,7 @@ class GloRepAttention(nn.Module):
         self.word_dim = word_dim
         self.query_length = query_length
 
-        self.u_w = nn.Parameter(torch.Tensor(batch_size, 1, word_dim))
+        self.u_w = nn.Parameter(torch.Tensor(1, 1, word_dim))
         self.u_w.data.uniform_(-0.1, 0.1)
         self.mlp = MLP(word_dim, hidden_size, word_dim)
         
@@ -161,8 +161,7 @@ class GloRepAttention(nn.Module):
         u_t = self.mlp(doc_rep) # shape=[bs, q_len, dim]
 
         # calculate the logits and weights
-        print(self.u_w.size())
-        print(u_t.size())
+        #print(u_t.size())
         logits = torch.matmul(u_t, self.u_w.permute(0, 2, 1))  #SHAPE=[bs, query_length, query_length]
         weights = nn.functional.softmax(logits, dim=-1)  # PROBLEM ! dim SHAPE = [BS, q_l, q_l] 
 
