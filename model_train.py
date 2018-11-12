@@ -593,7 +593,7 @@ def test(config_path):
     model = Attention(emb_size=emb_size, query_length=q_len, doc_length=d_len, num_heads=num_heads, 
         kernel_size=kernel_size, filter_size=filt_size, vocab_size=vocab_size, 
         dropout=0.0, qrep_dim=output_dim, hidden_size=hidden_size, batch_size=batch_size,
-        preemb=preemb, emb_path=emb_path)
+        preemb=preemb, emb_path=emb_path).cuda()
 
     # Test
     # load model from file
@@ -603,7 +603,7 @@ def test(config_path):
     
 
     MAP, NDCGs = evaluate(config_path, model, test_data, rel_path, mode="test")
-    print(MAP)
+    print(MAP, NDCGs)
     
 
 def main():
@@ -620,6 +620,7 @@ def main():
         else:
             raise ValueError("resume arg ", args.resume, "is not valid")
     else:
+        print(args.path)
         test(args.path)
 
 

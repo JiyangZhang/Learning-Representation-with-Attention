@@ -1,6 +1,6 @@
 [hyperparams]
-model_name_str = qfdRM_f1
-fold = 1
+model_name_str = qfdRM_f2
+fold = 2
 batch_size = 128
 vocab_size = 400002
 emb_size = 300
