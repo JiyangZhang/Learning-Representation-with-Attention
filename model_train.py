@@ -427,7 +427,7 @@ def train(config_path, resume=True):
                 """
                 evaluate part
                 """
-                if batch_count_tr % param_dict['eval_every_num_update'] == 0:
+                if batch_count_tr % 20 == 0:
                     if valid_data is not None:
                         MAP, NDCGs = evaluate(config_path, model, valid_data, rel_path, mode="valid")
                         print(MAP, NDCGs)
@@ -538,6 +538,73 @@ def evaluate(config_path, model, data, rel_path, mode="valid"):
     MAP = compute_map(run_path, rel_path, tmp_path)
     return MAP, NDCGs
 
+def test(config_path):
+    # Load the parameters
+    param_dict, rep_param_dict = load_params(config_path)
+
+    # load data
+    TEST_DIR01 = '{}/MQ2007/S1/'.format(param_dict["data_base_path"])
+    TEST_DIR02 = '{}/MQ2007/S2/'.format(param_dict["data_base_path"])
+    TEST_DIR03 = '{}/MQ2007/S3/'.format(param_dict["data_base_path"])
+    TEST_DIR04 = '{}/MQ2007/S4/'.format(param_dict["data_base_path"])
+    TEST_DIR05 = '{}/MQ2007/S5/'.format(param_dict["data_base_path"])
+    test_files01 = glob.glob("{}/testdata0.pkl".format(TEST_DIR01))
+    test_files02 = glob.glob("{}/testdata0.pkl".format(TEST_DIR02))
+    test_files03 = glob.glob("{}/testdata0.pkl".format(TEST_DIR03))
+    test_files04 = glob.glob("{}/testdata0.pkl".format(TEST_DIR04))
+    test_files05 = glob.glob("{}/testdata0.pkl".format(TEST_DIR05))
+
+    fold = param_dict["fold"]
+    model_base_path = param_dict['model_base_path']
+    model_name_str = param_dict['model_name_str']
+    if fold == 1:
+        test_files = test_files05[0]  # a path list ['/...'] only take the str
+        rel_path = '{}/{}/tmp/test/S5.qrels'.format(model_base_path, model_name_str)
+    elif fold == 2:
+        test_files = test_files01[0]
+        rel_path = '{}/{}/tmp/test/S1.qrels'.format(model_base_path, model_name_str)
+    elif fold == 3:
+        test_files = test_files02[0]
+        rel_path = '{}/{}/tmp/test/S2.qrels'.format(model_base_path, model_name_str)
+    elif fold == 4:
+        test_files = test_files03[0]
+        rel_path = '{}/{}/tmp/test/S3.qrels'.format(model_base_path, model_name_str)
+    elif fold == 5:
+        test_files = test_files04[0]
+        rel_path = '{}/{}/tmp/test/S4.qrels'.format(model_base_path, model_name_str)
+    else:
+        raise ValueError("wrong fold num {}".format(fold))
+    
+    test_data = load_dataset(test_files)
+    q_len = param_dict['q_len']
+    d_len = param_dict['d_len']
+    emb_size = param_dict['emb_size']
+    num_heads = param_dict['num_heads']
+    kernel_size = rep_param_dict['kernel_size']
+    filt_size = rep_param_dict['filt_size']
+    vocab_size = param_dict['vocab_size']
+    output_dim = rep_param_dict['output_dim']
+    hidden_size = param_dict['hidden_size']
+    batch_size = param_dict['batch_size']
+    preemb = param_dict['preemb']
+    emb_path = param_dict['emb_path']
+    hinge_margin = param_dict['hinge_margin']
+    
+    model = Attention(emb_size=emb_size, query_length=q_len, doc_length=d_len, num_heads=num_heads, 
+        kernel_size=kernel_size, filter_size=filt_size, vocab_size=vocab_size, 
+        dropout=0.0, qrep_dim=output_dim, hidden_size=hidden_size, batch_size=batch_size,
+        preemb=preemb, emb_path=emb_path)
+
+    # Test
+    # load model from file
+    model_file = '{}/{}/saves/model_file'.format(model_base_path, model_name_str)
+    model.load_state_dict(torch.load(model_file))
+    print("loaded model, and perform test now")
+    
+
+    MAP, NDCGs = evaluate(config_path, model, test_data, rel_path, mode="test")
+    print(MAP)
+    
 
 def main():
     parser = argparse.ArgumentParser()
@@ -553,8 +620,7 @@ def main():
         else:
             raise ValueError("resume arg ", args.resume, "is not valid")
     else:
-        pass
-        #test(args.path)
+        test(args.path)
 
 
 if __name__ == '__main__':
