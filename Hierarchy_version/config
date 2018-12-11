@@ -1,0 +1,34 @@
+[hyperparams]
+model_name_str = qfdRM_f1
+fold = 1
+batch_size = 128
+vocab_size = 400002
+emb_size = 300
+window_size = 5
+hidden_size = 256
+dropout = 0
+preemb = True
+hinge_margin = 1.0
+n_epoch = 50
+eval_every_num_update = 8
+alpha = 1e-9
+beta1 = 0.9
+beta2 = 0.98
+learning_rate = 1e-3
+num_heads = 6
+emb_path = /data/rali5/Tmp/Jiyang/glove_emb.pkl
+q_len = 15
+d_len = 550
+data_base_path = /data/rali7/Tmp/nieyifan/MQ/
+model_base_path = /part/01/Tmp/Jiyang
+dataset = MQ
+
+[rep]
+filt_size = 256
+kernel_size = 3
+output_dim = 128
+
+
+
+
+
